@@ -16,6 +16,7 @@ DB_NAME = os.getenv("DB_NAME", "adobepub_dev")
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 engine = create_engine(DATABASE_URL, echo=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
 # Segmentテーブルに対応するモデルクラス
 class Segment(Base):
@@ -41,7 +42,6 @@ if df_segment.empty:
 # 3. CSVに存在するIDのリスト（Set）を作成する
 csv_ids = set(df_segment['segment_id'])
 print(f"CSVに存在するIDの数: {len(csv_ids)}")
-
 
 # 4. セッションを開始して同期処理を実行
 session = SessionLocal()
