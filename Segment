@@ -2,6 +2,7 @@ import pandas as pd
 from sqlalchemy import create_engine, Column, String, Boolean
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
+import sys
 import os
 
 # 0.環境変数から接続情報を読み込む
@@ -16,55 +17,76 @@ DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NA
 engine = create_engine(DATABASE_URL, echo=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# 2. テーブルに対応するPythonクラス（モデル）を定義
-Base = declarative_base()
-
+# Segmentテーブルに対応するモデルクラス
 class Segment(Base):
-    __tablename__ = 'Segment'  # DBのテーブル名
-    __table_args__ = {'schema': 'master'} # スキーマを指定
-
+    __tablename__ = 'Segment'
+    __table_args__ = {'schema': 'master'}
     segment_id = Column(String(100), primary_key=True)
     segment_name = Column(String(255))
-   
-# 3. マスターCSVファイルを読み込む
+
+# 2. マスターCSVファイルを読み込む
+CSV_FILE_PATH = 'segment_master.csv'
 try:
-    df = pd.read_csv('segment_master.csv')
+    df_segment = pd.read_csv(CSV_FILE_PATH)
 except FileNotFoundError:
-    print("エラー: segment_master.csv が見つかりません。")
-    exit()
+    print(f"エラー: {CSV_FILE_PATH} が見つかりません。")
+    sys.exit(1)
+
+# 【安全チェック】DataFrameが空（行数が0）かどうかをチェック
+if df_segment.empty:
+    print(f"警告: {CSV_FILE_PATH} ファイルが空か、ヘッダーしかありません。")
+    print("テーブルの全データが削除されるのを防ぐため、処理を中断します。")
+    sys.exit(0)
+
+# 3. CSVに存在するIDのリスト（Set）を作成する
+csv_ids = set(df_segment['segment_id'])
+print(f"CSVに存在するIDの数: {len(csv_ids)}")
+
 
 # 4. セッションを開始して同期処理を実行
 session = SessionLocal()
 try:
-    for index, row in df.iterrows():
-        # CSVのIDをキーに、DBから既存のセグメントを検索
-        segment = session.query(Segment).filter(Segment.segment_id == row['segment_id']).first()
-
-        if segment:
-            # --- UPDATE処理 ---
-            # 既に存在する場合、名前を更新する（Pythonオブジェクトの属性を書き換えるだけ！）
-            print(f"Updating: {row['segment_id']}")
-            segment.segment_name = row['segment_name']
-           
+    # --- ステップ1: UPSERT処理 ---
+    for index, row in df_segment.iterrows():
+        segment_obj = session.query(Segment).filter(Segment.segment_id == row['segment_id']).first()
+        
+        if segment_obj:
+            # UPDATE
+            segment_obj.segment_name = row['segment_name']
+            # is_activeカラムを更新する場合
+            # if 'is_active' in row:
+            #     segment_obj.is_active = row['is_active']
         else:
-            # --- INSERT処理 ---
-            # 存在しない場合、新しいオブジェクトを作成してセッションに追加する
-            print(f"Inserting: {row['segment_id']}")
+            # INSERT
             new_segment = Segment(
                 segment_id=row['segment_id'],
-                segment_name=row['segment_name'],
+                segment_name=row['segment_name']
+                # is_active=row.get('is_active', True)
             )
             session.add(new_segment)
+
+    # --- ステップ2: 削除処理 ---
+    db_segments = session.query(Segment).all()
     
-    # 5. すべての変更をまとめてデータベースにコミット（書き込み）
+    delete_count = 0
+    for db_seg in db_segments:
+        if db_seg.segment_id not in csv_ids:
+            print(f"削除対象: {db_seg.segment_id} ({db_seg.segment_name})")
+            session.delete(db_seg)
+            delete_count += 1
+    
+    if delete_count > 0:
+        print(f"--- {delete_count}件のレコードが削除されます。 ---")
+
+    # 5. すべての変更（INSERT, UPDATE, DELETE）をまとめてDBにコミット
     session.commit()
-    print("Segmentテーブルの同期が完了しました。")
+    print("Segmentテーブルの完全同期が完了しました。")
 
 except Exception as e:
-    # エラーが発生した場合、すべての変更をロールバック（キャンセル）
     print(f"エラーが発生しました。変更をロールバックします: {e}")
     session.rollback()
-
+    sys.exit(1)
 finally:
-    # 処理が成功しても失敗しても、必ずセッションを閉じる
     session.close()
+
+print("処理が正常に終了しました。")
